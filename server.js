@@ -1,49 +1,35 @@
-// Listen on a specific host via the HOST environment variable
-var host = process.env.HOST || '0.0.0.0';
-// Listen on a specific port via the PORT environment variable
-var port = process.env.PORT || 8080;
-
-// Grab the blacklist from the command-line so that we can update the blacklist without deploying
-// again. CORS Anywhere is open by design, and this blacklist is not used, except for countering
-// immediate abuse (e.g. denial of service). If you want to block all origins except for some,
-// use originWhitelist instead.
-var originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
-var originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
-function parseEnvList(env) {
-  if (!env) {
-    return [];
-  }
-  return env.split(',');
-}
-
-// Set up rate-limiting to avoid abuse of the public CORS Anywhere server.
-var checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
-
-var cors_proxy = require('./lib/cors-anywhere');
-cors_proxy.createServer({
-  originBlacklist: originBlacklist,
-  originWhitelist: originWhitelist,
-  requireHeader: ['origin', 'x-requested-with'],
-  checkRateLimit: checkRateLimit,
-  removeHeaders: [
-    'cookie',
-    'cookie2',
-    // Strip Heroku-specific headers
-    'x-request-start',
-    'x-request-id',
-    'via',
-    'connect-time',
-    'total-route-time',
-    // Other Heroku added debug headers
-    // 'x-forwarded-for',
-    // 'x-forwarded-proto',
-    // 'x-forwarded-port',
-  ],
-  redirectSameOrigin: true,
-  httpProxyOptions: {
-    // Do not add X-Forwarded-For, etc. headers, because Heroku already adds it.
-    xfwd: false,
-  },
-}).listen(port, host, function() {
-  console.log('Running CORS Anywhere on ' + host + ':' + port);
+//server.js
+const corsAnywhere = require('cors-anywhere');
+const express = require('express');
+const apicache = require('apicache');
+const expressHttpProxy = require('express-http-proxy');
+const CORS_PROXY_PORT = 5000;
+// Create CORS Anywhere server
+corsAnywhere.createServer({}).listen(CORS_PROXY_PORT, () => {
+    console.log(
+        `Internal CORS Anywhere server started at port ${CORS_PROXY_PORT}`
+    );
 });
+// Create express Cache server
+let app = express();
+// Register cache middleware for GET and OPTIONS verbs
+app.get('/*', cacheMiddleware());
+app.options('/*', cacheMiddleware());
+// Proxy to CORS server when request misses cache
+app.use(expressHttpProxy(`localhost:${CORS_PROXY_PORT}`));
+const APP_PORT = process.env.PORT || 8080;
+app.listen(APP_PORT, () => {
+    console.log(`External CORS cache server started at port ${APP_PORT}`);
+});
+/**
+ * Construct the caching middleware
+ */
+function cacheMiddleware() {
+    const cacheOptions = {
+        statusCodes: { include: [200] },
+        defaultDuration: 60000,
+        appendKey: (req, res) => req.method
+    };
+    let cacheMiddleware = apicache.options(cacheOptions).middleware();
+    return cacheMiddleware;
+}
